@@ -29,9 +29,8 @@ type Speaker = RoomImpl | ContactImpl
 interface ICommand {
     name: string
     description: string
-    exec: (talker: Speaker, text: string) => Promise<void>
+    exec: (talker: Speaker, text?: string) => Promise<void>
 }
-const COMMAND_REG = /\/[a-z]+\s/
 
 export class ChatGPTBot {
     botName: string = ''
@@ -39,23 +38,31 @@ export class ChatGPTBot {
         this.botName = botName
     }
     get chatGroupTriggerRegEx(): RegExp {
-      return new RegExp(`^@${regexpEncode(this.botName)}\\s`);
+        return new RegExp(`^@${regexpEncode(this.botName)}\\s`);
+    }
+    matchCommand(rawText: string): [string | undefined, string | undefined] {
+        const privateReg = /^\/cmd\s([a-z]+)\s?(.*)/
+        const groupReg = new RegExp(`^@${regexpEncode(this.botName)}\\s\/cmd\\s([a-z]+)\\s?(.*)`)
+        let match = rawText.match(privateReg) || rawText.match(groupReg)
+        if (match?.index === 0) {
+            return [match[1], match[2]]
+        }
+        return [undefined, undefined]
     }
     private readonly commands: ICommand[] = [
         {
             name: 'help',
             description: '显示帮助信息',
             exec: async talker => {
-                await this.trySay(
-                    talker,
+                await talker.say(
                     '========\n' +
-                        '/help\n' +
+                        '/cmd help\n' +
                         '# 显示帮助信息\n' +
-                        '/prompt <PROMPT>\n' +
+                        '/cmd prompt <PROMPT>\n' +
                         '# 设置当前会话的 prompt \n' +
-                        '/image <PROMPT>\n' +
+                        '/cmd image <PROMPT>\n' +
                         '# 根据 prompt 生成图片\n' +
-                        '/clear\n' +
+                        '/cmd clear\n' +
                         '# 清除自上次启动以来的所有会话\n' +
                         '========'
                 )
@@ -65,11 +72,16 @@ export class ChatGPTBot {
             name: 'prompt',
             description: '设置当前会话的 prompt',
             exec: async (talker, prompt) => {
+                if (!prompt) {
+                    await talker.say('请输入 prompt 信息')
+                    return
+                }
                 if (talker instanceof RoomImpl) {
                     cache.setPrompt(await talker.topic(), prompt)
                 } else {
                     cache.setPrompt(talker.name(), prompt)
                 }
+                await talker.say('prompt 已设置')
             },
         },
         {
@@ -81,15 +93,28 @@ export class ChatGPTBot {
                 } else {
                     cache.clearHistory(talker.name())
                 }
+                await talker.say('会话已清除')
             },
         },
+        {
+            name: 'image',
+            description: '根据 prompt 生成图片',
+            exec: async (talker, prompt) => {
+                if (!prompt) {
+                    await talker.say('请输入 prompt 信息')
+                    return
+                }
+                let url = (await dalle(this.botName, prompt)) as string
+                const fileBox = FileBox.fromUrl(url)
+                talker.say(fileBox)
+            }
+        }
     ]
 
-    async command(contact: any, rawText: string): Promise<void> {
-        const [commandName, ...args] = rawText.split(/\s+/)
-        const command = this.commands.find(command => command.name === commandName)
-        if (command) {
-            await command.exec(contact, args.join(' '))
+    async command(contact: any, commandStr: string, prompt?: string): Promise<void> {
+        const cmd = this.commands.find(c => c.name === commandStr)
+        if (cmd) {
+            await cmd.exec(contact, prompt)
         }
     }
     
@@ -150,7 +175,7 @@ export class ChatGPTBot {
 
     async onGroupMessage(talker: ContactInterface, text: string, room: RoomInterface) {
         const gptMessage = await this.getGPTMessage(await room.topic(), text)
-        const result = `@${talker.name()} ${text}\n\n------\n ${gptMessage}`
+        const result = `@${talker.name()} ${text}\n------\n ${gptMessage}`
         await this.trySay(room, result)
     }
 
@@ -179,30 +204,14 @@ export class ChatGPTBot {
             })
             // Whisper
             whisper('', fileName).then(text => {
-                message.say(text)
+                talker.say(text)
             })
             return
         }
-        // 使用DallE生成图片
-        if (rawText.startsWith('/image ')) {
-            console.log(`🤖 Image: ${rawText}`)
-            const imgContent = rawText.slice(4)
-            if (privateChat) {
-                let url = (await dalle(talker.name(), imgContent)) as string
-                const fileBox = FileBox.fromUrl(url)
-                message.say(fileBox)
-            } else {
-                let url = (await dalle(await room.topic(), imgContent)) as string
-                const fileBox = FileBox.fromUrl(url)
-                message.say(fileBox)
-            }
-            return
-        }
-        const match = rawText.match(COMMAND_REG)
-        if (match && match.index === 0) {
-            console.log(`🤖 Command: ${rawText}`)
-            const cmdContent = rawText.slice(match[0].length)
-            await this.command(privateChat ? talker : room, cmdContent)
+        const [command, prompt] = this.matchCommand(rawText)
+        if (command) {
+            console.log(`🤖 Command: ${command} ${prompt}`)
+            await this.command(privateChat ? talker : room, command, prompt)
             return
         }
         if (this.triggerGPTMessage(rawText, privateChat)) {
