@@ -1,20 +1,32 @@
 import { Configuration, ChatCompletionRequestMessageRoleEnum, CreateImageRequestResponseFormatEnum, CreateImageRequestSizeEnum, OpenAIApi } from 'openai'
 import fs from 'fs'
-import chatCache from './cache'
-import { config } from './config'
+import chatCache from './cache.js'
+import { config } from './config.js'
 
-const configuration = new Configuration({
-    apiKey: config.openaiApiKey,
-    basePath: config.openaiApiUrl,
+const openAIClients = config.openaiApiKeys?.split(',').map((key: string) => {
+    return new OpenAIApi(new Configuration({
+        apiKey: key,
+        basePath: config.openaiApiUrl,
+    }))
 })
-const openai = new OpenAIApi(configuration)
+let activeIndex = 0
+const getActiveClient = (next: boolean = false) => {
+    if (next) {
+        console.info('try next client, index:' + activeIndex)
+        activeIndex += 1
+        if (activeIndex >= openAIClients?.length!) {
+            activeIndex = 0
+        }
+    }
+    return openAIClients![activeIndex]
+}
 
 /**
  * Get completion from OpenAI
  * @param username
  * @param message
  */
-async function chatgpt(username: string, message: string): Promise<string> {
+async function chatgpt(username: string, message: string, next?: boolean): Promise<string> {
     const messages = chatCache.getChatMessages(username)
     messages.push({
         role: ChatCompletionRequestMessageRoleEnum.User,
@@ -22,7 +34,7 @@ async function chatgpt(username: string, message: string): Promise<string> {
     })
     let response: any
     try {
-        response = await openai.createChatCompletion({
+        response = await getActiveClient(next).createChatCompletion({
             model: config.openaiModel,
             messages: messages,
             temperature: config.openaiTemperature,
@@ -31,7 +43,7 @@ async function chatgpt(username: string, message: string): Promise<string> {
         if (e?.response?.statusText) {
             console.error('openai error:' + e.response.statusText)
             if (e.response.statusText === 'Too Many Requests') {
-                // TODO
+                return await chatgpt(username, message, true)
             }
             return e.response.statusText
         }
@@ -64,7 +76,7 @@ async function chatgpt(username: string, message: string): Promise<string> {
  * @param prompt
  */
 async function dalle(username: string, prompt: string): Promise<string> {
-    const response = await openai
+    const response = await getActiveClient()
         .createImage({
             prompt: prompt,
             n: 1,
@@ -88,7 +100,7 @@ async function dalle(username: string, prompt: string): Promise<string> {
  */
 async function whisper(username: string, videoPath: string): Promise<string> {
     const file: any = fs.createReadStream(videoPath)
-    const response = await openai
+    const response = await getActiveClient()
         .createTranscription(file, 'whisper-1')
         .then(res => res.data)
         .catch(err => console.log(err))

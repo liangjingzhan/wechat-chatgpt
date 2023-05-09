@@ -1,4 +1,3 @@
-import { config } from './config.js'
 import { ContactImpl, ContactInterface, RoomImpl, RoomInterface } from 'wechaty/impls'
 import { Message } from 'wechaty'
 import { FileBox } from 'file-box'
